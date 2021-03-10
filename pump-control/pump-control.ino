@@ -27,11 +27,9 @@
 #define IN_WATER_PRESSURE               10
 #define IN_TANK_1_FLOAT                 4
 #define IN_TANK_2_FLOAT                 6
-
-/* Inputs pullup ACTIVE HIGH */
+#define IN_TIME_CLOCK                   8
 #define IN_TANK_1_LIM                   5
 #define IN_TANK_2_LIM                   7
-#define IN_AUTO                         8
 
 /* Outputs ACTIVE HIGH */
 #define OUT_IGN                         A0
@@ -56,6 +54,7 @@
 
 /* Global variables */
 int mode_auto = 0;
+int quiet_time = 0;
 int ignition_on = 0;
 int no_water_pressure = 1;
 int startup_attempt = 0;
@@ -70,7 +69,7 @@ void setup() {
 	pinMode(IN_TANK_1_LIM, INPUT_PULLUP);
 	pinMode(IN_TANK_2_FLOAT, INPUT_PULLUP);
 	pinMode(IN_TANK_2_LIM, INPUT_PULLUP);
-	pinMode(IN_AUTO, INPUT_PULLUP);
+	pinMode(IN_TIME_CLOCK, INPUT_PULLUP);
 	pinMode(IN_FUEL, INPUT_PULLUP);
 	pinMode(IN_WATER_PRESSURE, INPUT_PULLUP);
 	
@@ -102,11 +101,7 @@ void log(const char *buf) {
 }
 
 void alert(const char *msg) {
-	/*
-	 * alert operator and do nothing forever until manual mode selected
-	 * and start button pressed.
-	 */
-	int start_button = digitalRead(IN_START);
+	/* alert operator and do nothing forever until start button pressed */
 	char buf[64];
 	sprintf(buf, "Alert: %s", msg);
 	log(buf);
@@ -115,24 +110,36 @@ void alert(const char *msg) {
 	digitalWrite(OUT_ALERT, HIGH);
 	while (1) {
 		delay(100);
-		mode_auto = digitalRead(IN_AUTO);
-		start_button = digitalRead(IN_START);
-		if (!start_button && !mode_auto) {
-			log("start button pressed and mode manual, alert finished");
+		if (!digitalRead(IN_START)) {
+			log("start button pressed, alert finished");
 			digitalWrite(OUT_ALERT, LOW);
+			/* sleep for 1 second so this button press does not
+			 * also cause a manual startup. */
+			delay(1000);
 			break;
 		}
 	}
 }
 
+/* when the pump is started by the button, we only care about the limit
+ * switches. when the pump has started automatically we only care about the
+ * float swicthes.
+ */
 int tanks_full() {
-	if (digitalRead(IN_TANK_1_LIM) == HIGH &&
-	    digitalRead(IN_TANK_2_LIM) == HIGH &&
-	    digitalRead(IN_TANK_1_FLOAT) == HIGH &&
-	    digitalRead(IN_TANK_2_FLOAT) == HIGH)
-		return 1;
-	else
-		return 0;
+	int f = 0;
+	if (mode_auto) {
+		if (digitalRead(IN_TANK_1_FLOAT) == HIGH &&
+		    digitalRead(IN_TANK_2_FLOAT) == HIGH)
+			f = 1;
+	} else {
+		if (digitalRead(IN_TANK_1_LIM) == HIGH &&
+		    digitalRead(IN_TANK_2_LIM) == HIGH) {
+			f = 1;
+			log("both tanks filled to limit switch. Now enable auto mode.");
+			mode_auto = 1;
+		}
+	}
+	return f;
 }
 
 int pump_is_running() {
@@ -177,6 +184,8 @@ void close_valves() {
 void do_shutdown() {
 	log(__func__);
 	int cnt;
+	if (!ignition_on)
+		return;
 	digitalWrite(OUT_IGN, LOW);
 	ignition_on = 0;
 	for (cnt = 0; cnt < IGN_OFF_WAIT_MAX; cnt++) {
@@ -194,7 +203,7 @@ void do_startup() {
 	char buf[24];
 
 	if (pump_is_running()) {
-		log("pump is started!");
+		log("pump is already running!");
 		return;
 	}
 	if (!tank_1_valve_open && !tank_2_valve_open) {
@@ -247,10 +256,11 @@ void loop() {
 	int stop_button = digitalRead(IN_STOP);
 	int fuel = digitalRead(IN_FUEL);
 
-	mode_auto = digitalRead(IN_AUTO);
+	/* time clock input high = contacts open = do not run */
+	quiet_time = digitalRead(IN_TIME_CLOCK);
 	no_water_pressure = digitalRead(IN_WATER_PRESSURE);
 
-	sprintf(buf, "auto %s", mode_auto ? "on" : "off");
+	sprintf(buf, "auto mode %s", mode_auto ? "on" : "off");
 	log(buf);
 	sprintf(buf, "ignition %s", ignition_on ? "on" : "off");
 	log(buf);
@@ -269,45 +279,37 @@ void loop() {
 		tank_2_valve_open ? "open" : "closed");
 	log(buf);
 
-	log("check water_pressure stop_button tanks_full");
-	if (no_water_pressure || tanks_full()) {
-		if (ignition_on)
-			do_shutdown();
-	}
+	if (no_water_pressure || tanks_full() || mode_auto && quiet_time)
+		do_shutdown();
 
 	if (!fuel) {
-		if (ignition_on)
-			do_shutdown();
+		do_shutdown();
 		alert("fuel low");
 	}
 
 	if (!start_button) {
-		log("start button pressed");
-		/* if both tanks are not full by all measures, start pumping */
-		if (!tanks_full()) {
-			/* open the valves to each tank based on the limit
-			 * switch or float switch because this is operator action.
-			 */
-			if (digitalRead(IN_TANK_1_LIM) == LOW ||
-			    digitalRead(IN_TANK_1_FLOAT) == LOW)
-				do_tank_1_valve_open();
-			if (digitalRead(IN_TANK_2_LIM) == LOW ||
-			    digitalRead(IN_TANK_2_FLOAT) == LOW)
-				do_tank_2_valve_open();
-			do_startup();
-		}
+		log("start button pressed (turn auto mode off)");
+		mode_auto = 0;
+		/* manual start, we only care about the limit switches. */
+		if (digitalRead(IN_TANK_1_LIM) == LOW)
+			do_tank_1_valve_open();
+		if (digitalRead(IN_TANK_2_LIM) == LOW)
+			do_tank_2_valve_open();
+		do_startup();
 	}
 
 	/*
 	 * stop button causes alert which means we do nothing forever until the
 	 * start button is pressed.
+	 * change back to auto mode.
 	 */
 	if (!stop_button) {
 		log("stop button pressed");
 		alert("stopped");
 	}
 
-	if (mode_auto) {
+	/* auto pump mode only reads the tank floats */
+	if (!quiet_time && mode_auto) {
 		if (digitalRead(IN_TANK_1_FLOAT) == LOW) {
 			do_tank_1_valve_open();
 			do_startup();
