@@ -53,7 +53,7 @@
 #define BAUD                            115200
 
 /* Global variables */
-int mode_auto = 0;
+int mode_auto = 1;
 int quiet_time = 0;
 int ignition_on = 0;
 int no_water_pressure = 1;
@@ -109,13 +109,14 @@ void alert(const char *msg) {
 	do_shutdown();
 	digitalWrite(OUT_ALERT, HIGH);
 	while (1) {
-		delay(100);
+		delay(10);
 		if (!digitalRead(IN_START)) {
 			log("start button pressed, alert finished");
 			digitalWrite(OUT_ALERT, LOW);
-			/* sleep for 1 second so this button press does not
+			/* wait for button release so this button press does not
 			 * also cause a manual startup. */
-			delay(1000);
+			while (!digitalRead(IN_START))
+				delay(10);
 			break;
 		}
 	}
@@ -288,7 +289,8 @@ void loop() {
 	}
 
 	if (!start_button) {
-		log("start button pressed (turn auto mode off)");
+		log("start button pressed");
+		log("turn auto mode off");
 		mode_auto = 0;
 		/* manual start, we only care about the limit switches. */
 		if (digitalRead(IN_TANK_1_LIM) == LOW)
@@ -305,6 +307,8 @@ void loop() {
 	 */
 	if (!stop_button) {
 		log("stop button pressed");
+		log("turn auto mode on");
+		mode_auto = 1;
 		alert("stopped");
 	}
 
