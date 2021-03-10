@@ -1,5 +1,5 @@
 /*
- * Pump control system v0.1
+ * Pump control system
  *
  * Each pin can provide or receive a maximum of 40 mA and has an internal
  * pull-up resistor (disconnected by default) of 20-50 kOhms.
@@ -91,7 +91,7 @@ void setup() {
 }
 
 /* log function makes it easy to control which serial port is being used */
-void log(char *buf) {
+void log(const char *buf) {
 	#ifdef debug_serial_USB
 	Serial.println(buf);
 	#elif defined debug_serial_header
@@ -101,7 +101,7 @@ void log(char *buf) {
 	#endif
 }
 
-void alert(char *msg) {
+void alert(const char *msg) {
 	/*
 	 * alert operator and do nothing forever until manual mode selected
 	 * and start button pressed.
@@ -166,11 +166,6 @@ void do_tank_2_valve_close() {
 	log(__func__);
 	digitalWrite(OUT_TANK_2_VALVE, LOW);
 	tank_2_valve_open = 0;
-}
-
-void open_valves() {
-	do_tank_1_valve_open();
-	do_tank_2_valve_open();
 }
 
 void close_valves() {
