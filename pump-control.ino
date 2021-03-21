@@ -35,29 +35,27 @@
  *
  */
 //Inputs pullup ACTIVE LOW
+#define IN_RESET_ALARMS                 1
 #define IN_START                        2
 #define IN_STOP                         3
+#define IN_TANK_1_FLOAT                 4
+#define IN_TANK_1_LIM                   5
+#define IN_TANK_2_FLOAT                 6
+#define IN_TANK_2_LIM                   7
+#define IN_TIME_CLOCK                   8
 #define IN_FUEL                         9
 #define IN_WATER_PRESSURE               10
-#define IN_TANK_1_FLOAT                 4
-#define IN_TANK_2_FLOAT                 6
-#define IN_TIME_CLOCK                   8
-#define IN_TANK_1_LIM                   5
-#define IN_TANK_2_LIM                   7
-//Brad's Addition
-#define IN_RESET_ALARMS                 1
 #define IN_OIL_PRESSURE_SWITCH          11
 
 //Outputs ACTIVE HIGH
 #define OUT_IGN                         A0
+#define OUT_OIL_PRESSURE_ALERT          12
+#define OUT_LOW_FUEL_ALERT              13
 #define OUT_START                       A1
 #define OUT_PRESSURE_OVERRIDE           A2
 #define OUT_TANK_1_VALVE                A3
 #define OUT_TANK_2_VALVE                A4
 #define OUT_WATER_PRESSURE_ALERT        A5
-//Brad's Addition
-#define OUT_OIL_PRESSURE_ALERT          12
-#define OUT_LOW_FUEL_ALERT              13
 
 //max time to wait for pressure switch to open after ignition off (seconds)
 #define IGN_OFF_WAIT_MAX                15
@@ -81,7 +79,6 @@ int no_water_pressure = 1;
 int startup_attempt = 0;
 int tank_1_valve_open = 0;
 int tank_2_valve_open = 0;
-//Brad's Addition
 int pump_is_now_running = 0;
 int ignition_status = 1;
 int low_oil_pressure = 1;
