@@ -35,6 +35,7 @@
  *
  */
 //Inputs pullup ACTIVE LOW
+#define IN_BATT                         A0
 #define IN_RESET_ALARMS                 1
 #define IN_START                        2
 #define IN_STOP                         3
@@ -48,9 +49,9 @@
 #define IN_OIL_PRESSURE_SWITCH          11
 
 //Outputs ACTIVE HIGH
-#define OUT_IGN                         A0
 #define OUT_OIL_PRESSURE_ALERT          12
 #define OUT_LOW_FUEL_ALERT              13
+#define OUT_IGN                         0
 #define OUT_START                       A1
 #define OUT_PRESSURE_OVERRIDE           A2
 #define OUT_TANK_1_VALVE                A3
@@ -96,6 +97,7 @@ void setup() {
   pinMode(IN_FUEL, INPUT_PULLUP);
   pinMode(IN_WATER_PRESSURE, INPUT_PULLUP);
   pinMode(IN_OIL_PRESSURE_SWITCH, INPUT_PULLUP);
+  pinMode(IN_BATT, INPUT_PULLUP);
   
   pinMode(OUT_IGN, OUTPUT);
   pinMode(OUT_START, OUTPUT);
@@ -124,6 +126,39 @@ void log(const char *buf) {
   #else
   /* no serial output */
   #endif
+}
+
+#define VREF        4.96      // measured from 5v on arduino with fluke
+#define VDIVFACTOR  3.03982   // measured with fluke 12.29/4.043 out
+#define R1          10000.0    // nominal
+#define R2          4700.0    // nominal
+#define R1M          9830.0    // measured
+#define R2M          4690.0    // measured
+
+float readbatt()
+{
+  float a, v, vmeasured;
+  a = analogRead(IN_BATT);
+  vmeasured = a*VREF/1024.0;
+  char buf[64];
+  char voltstr[10];
+  // measured input voltage
+  sprintf(buf, "measured %sV", dtostrf(vmeasured, 2, 2, voltstr));
+  log(buf);
+  // method 1: work out v at VIN based on resistors 4.7k and 10k
+  // Vin = Vout * (R1 + R2) / R2
+  // measured resistor values
+  sprintf(buf, "battery %sV", dtostrf((vmeasured*(R1M + R2M))/R2M, 2, 2, voltstr));
+  log(buf);
+  // nominal resistor values
+  sprintf(buf, "battery nom %sV", dtostrf((vmeasured*(R1 + R2))/R2, 2, 2, voltstr));
+  log(buf);
+  // method 2: measure the real circuit and apply a constant value
+  sprintf(buf, "battery mes %sV", dtostrf(vmeasured*VDIVFACTOR, 2, 2, voltstr));
+  log(buf);
+
+  v = vmeasured*VDIVFACTOR;
+  return v;
 }
 
 //defining the alerts
@@ -371,6 +406,8 @@ void loop() {
   int start_button = digitalRead(IN_START);
   int stop_button = digitalRead(IN_STOP);
   int reset_button = digitalRead(IN_RESET_ALARMS);
+  float volts = readbatt();
+
   low_fuel = digitalRead(IN_FUEL);
   /* time clock input high = contacts open = do not run */
   quiet_time = digitalRead(IN_TIME_CLOCK);
@@ -413,6 +450,9 @@ void loop() {
     digitalRead(IN_TANK_2_LIM),
     digitalRead(IN_TANK_2_FLOAT),
     tank_2_valve_open ? "open" : "closed");
+  log(buf);
+  char voltstr[10];
+  sprintf(buf, "battery %sV", dtostrf(volts, 2, 2, voltstr));
   log(buf);
 
 // check if fuel is low, shutdown (if pump is running) and turn on low fuel alert
