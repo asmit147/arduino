@@ -3,6 +3,19 @@
 /*
  * Pump control system
  *
+ * Update v1.1: 
+ * 1. Added IN_RESET_ALARMS to reset alarms
+ * 2. Modified the operation of the IN_STOP
+ *    to shutdown pump turn on alarm
+ * 2. Added outputs to the logging
+ * 3. All test result issues resolved
+ * 4. Test for oil pressure on startup
+ * 
+ * Update v1.0: 
+ * 1. Added oil pressure input
+ * 2. Added inputs to the logging
+ * 3. Added fuel alert output & oil pressure alert output
+ * 
  * Each pin can provide or receive a maximum of 40 mA and has an internal
  * pull-up resistor (disconnected by default) of 20-50 kOhms.
  *
@@ -21,8 +34,7 @@
  * actions.
  *
  */
-
-/* Inputs pullup ACTIVE LOW */
+//Inputs pullup ACTIVE LOW
 #define IN_START                        2
 #define IN_STOP                         3
 #define IN_FUEL                         9
@@ -32,20 +44,26 @@
 #define IN_TIME_CLOCK                   8
 #define IN_TANK_1_LIM                   5
 #define IN_TANK_2_LIM                   7
+//Brad's Addition
+#define IN_RESET_ALARMS                 1
+#define IN_OIL_PRESSURE_SWITCH          11
 
-/* Outputs ACTIVE HIGH */
+//Outputs ACTIVE HIGH
 #define OUT_IGN                         A0
 #define OUT_START                       A1
 #define OUT_PRESSURE_OVERRIDE           A2
 #define OUT_TANK_1_VALVE                A3
 #define OUT_TANK_2_VALVE                A4
-#define OUT_ALERT                       A5
+#define OUT_WATER_PRESSURE_ALERT        A5
+//Brad's Addition
+#define OUT_OIL_PRESSURE_ALERT          12
+#define OUT_LOW_FUEL_ALERT              13
 
-/* max time to wait for pressure switch to open after ignition off (seconds) */
-#define IGN_OFF_WAIT_MAX                10
+//max time to wait for pressure switch to open after ignition off (seconds)
+#define IGN_OFF_WAIT_MAX                15
 #define CRANKING_DELAY                  5
 #define CRANKING_TIME                   7
-#define WATER_PRESSURE_WAIT_MAX         10
+#define WATER_PRESSURE_WAIT_MAX         15
 #define MAX_STARTUP_ATTEMPTS            2
 
 /* uncomment to output to USB serial port */
@@ -58,13 +76,19 @@
 int mode_auto = 1;
 int quiet_time = 0;
 int ignition_on = 0;
+int low_fuel = 1;
 int no_water_pressure = 1;
 int startup_attempt = 0;
 int tank_1_valve_open = 0;
 int tank_2_valve_open = 0;
+//Brad's Addition
+int pump_is_now_running = 0;
+int ignition_status = 1;
+int low_oil_pressure = 1;
 
 void setup() {
   /* initalise all inputs and outputs */
+  pinMode(IN_RESET_ALARMS, INPUT_PULLUP);
   pinMode(IN_START, INPUT_PULLUP);
   pinMode(IN_STOP, INPUT_PULLUP);
   pinMode(IN_TANK_1_FLOAT, INPUT_PULLUP);
@@ -74,13 +98,16 @@ void setup() {
   pinMode(IN_TIME_CLOCK, INPUT_PULLUP);
   pinMode(IN_FUEL, INPUT_PULLUP);
   pinMode(IN_WATER_PRESSURE, INPUT_PULLUP);
+  pinMode(IN_OIL_PRESSURE_SWITCH, INPUT_PULLUP);
   
   pinMode(OUT_IGN, OUTPUT);
   pinMode(OUT_START, OUTPUT);
   pinMode(OUT_PRESSURE_OVERRIDE, OUTPUT);
   pinMode(OUT_TANK_1_VALVE, OUTPUT);
   pinMode(OUT_TANK_2_VALVE, OUTPUT);
-  pinMode(OUT_ALERT, OUTPUT);
+  pinMode(OUT_WATER_PRESSURE_ALERT, OUTPUT);
+  pinMode(OUT_OIL_PRESSURE_ALERT, OUTPUT);
+  pinMode(OUT_LOW_FUEL_ALERT, OUTPUT);
 
   #ifdef debug_serial_USB
   /* USB port ttyACM */
@@ -102,110 +129,168 @@ void log(const char *buf) {
   #endif
 }
 
-void alert(const char *msg) {
+//defining the alerts
+
+void oil_pressure_alert(const char *msg) {
   /* alert operator and do nothing forever until start button pressed */
   char buf[64];
   sprintf(buf, "Alert: %s", msg);
   log(buf);
 
-  do_shutdown();
-  digitalWrite(OUT_ALERT, HIGH);
+    log("low oil pressure, shutting down pump and valves");
+    digitalWrite(OUT_OIL_PRESSURE_ALERT, HIGH);
+    do_shutdown();
+  
   while (1) {
     delay(10);
-    if (!digitalRead(IN_START)) {
-      log("start button pressed, alert finished");
-      digitalWrite(OUT_ALERT, LOW);
+    if (!digitalRead(IN_RESET_ALARMS)) {
+      log("reset button pressed, low oil pressure alert cleared");
+      digitalWrite(OUT_OIL_PRESSURE_ALERT, LOW);
       /* wait for button release so this button press does not
        * also cause a manual startup. */
-      while (!digitalRead(IN_START))
+      while (!digitalRead(IN_RESET_ALARMS))
         delay(10);
       break;
     }
   }
 }
 
-/* when the pump is started by the button, we only care about the limit
- * switches. when the pump has started automatically we only care about the
- * float swicthes.
- */
-int tanks_full() {
-  int f = 0;
-  if (mode_auto) {
-    if (digitalRead(IN_TANK_1_FLOAT) == HIGH &&
-        digitalRead(IN_TANK_2_FLOAT) == HIGH)
-      f = 1;
-  } else {
-    if (digitalRead(IN_TANK_1_LIM) == HIGH &&
-        digitalRead(IN_TANK_2_LIM) == HIGH) {
-      f = 1;
-      log("both tanks filled to limit switch. Now enable auto mode.");
-      mode_auto = 1;
+void low_fuel_alert(const char *msg) {
+  /* alert operator and do nothing forever until start button pressed */
+  char buf[64];
+  sprintf(buf, "Alert: %s", msg);
+  log(buf);
+
+  log("low fuel, shutting down pump and valves");
+  digitalWrite(OUT_LOW_FUEL_ALERT, HIGH);
+  do_shutdown();
+  
+  while (1) {
+    delay(10);
+    if (!digitalRead(IN_RESET_ALARMS)) {
+      log("reset button pressed, alert finished");
+      digitalWrite(OUT_LOW_FUEL_ALERT, LOW);
+      /* wait for button release so this button press does not
+       * also cause a manual startup. */
+      while (!digitalRead(IN_RESET_ALARMS))
+        delay(10);
+      break;
     }
   }
-  return f;
 }
 
-int pump_is_running() {
-  if (ignition_on && !no_water_pressure) {
-    /* clear startup attempts so auto mode always tries up to 2 times */
-    startup_attempt = 0;
-    return 1;
-  } else
-    return 0;
+void low_water_pressure_alert(const char *msg) {
+  /* alert operator and do nothing forever until start button pressed */
+  char buf[64];
+  sprintf(buf, "Alert: %s", msg);
+  log(buf);
+  log("low water pressure, shutting down pump and valves");
+  digitalWrite(OUT_WATER_PRESSURE_ALERT, HIGH);
+  do_shutdown();
+  
+  while (1) {
+    delay(10);
+    if (!digitalRead(IN_RESET_ALARMS)) {
+      log("reset button pressed, alert finished");
+      digitalWrite(OUT_WATER_PRESSURE_ALERT, LOW);
+      /* wait for button release so this button press does not
+       * also cause a manual startup. */
+      while (!digitalRead(IN_RESET_ALARMS))
+        delay(10);
+      break;
+    }
+  }
+}
+
+void stop_pump_alert() {
+  log("shutdown pump and turn on alerts");
+  digitalWrite(OUT_WATER_PRESSURE_ALERT, HIGH);
+  digitalWrite(OUT_OIL_PRESSURE_ALERT, HIGH);
+  
+  do_shutdown();
+  while (1) {
+    delay(10);
+    if (!digitalRead(IN_RESET_ALARMS)) {
+      log("reset button pressed, alert finished");
+      digitalWrite(OUT_WATER_PRESSURE_ALERT, LOW);
+      digitalWrite(OUT_OIL_PRESSURE_ALERT, LOW);
+      /* wait for button release so this button press does not
+       * also cause a manual startup. */
+      while (!digitalRead(IN_RESET_ALARMS))
+        delay(10);
+      break;
+    }
+  }
 }
 
 void do_tank_1_valve_open() {
   log(__func__);
   digitalWrite(OUT_TANK_1_VALVE, HIGH);
-  tank_1_valve_open = 1;
+  tank_1_valve_open = digitalRead(OUT_TANK_1_VALVE);
+  
 }
-
 void do_tank_2_valve_open() {
   log(__func__);
   digitalWrite(OUT_TANK_2_VALVE, HIGH);
-  tank_2_valve_open = 1;
+  tank_2_valve_open = digitalRead(OUT_TANK_2_VALVE);
+ 
 }
-
 void do_tank_1_valve_close() {
   log(__func__);
   digitalWrite(OUT_TANK_1_VALVE, LOW);
-  tank_1_valve_open = 0;
+  tank_1_valve_open = digitalRead(OUT_TANK_1_VALVE);
+ 
 }
-
 void do_tank_2_valve_close() {
   log(__func__);
   digitalWrite(OUT_TANK_2_VALVE, LOW);
-  tank_2_valve_open = 0;
+  tank_2_valve_open = digitalRead(OUT_TANK_2_VALVE);
+  
 }
-
 void close_valves() {
   do_tank_1_valve_close();
   do_tank_2_valve_close();
 }
 
-/* blocking, which means buttons are not read during this time. */
+  /*  During shutdown, the program will only be looking at the status of
+  *   the IN_OIL_PRESSURE_SWITCH and IN_WATER_PRESSURE inputs.
+  *   All other inputs will be ignored until shutdwn is complete
+  */
+
 void do_shutdown() {
   log(__func__);
   int cnt;
-  if (!ignition_on)
-    return;
   digitalWrite(OUT_IGN, LOW);
-  ignition_on = 0;
+  ignition_on = digitalRead(OUT_IGN);
+  
   for (cnt = 0; cnt < IGN_OFF_WAIT_MAX; cnt++) {
-    if (digitalRead(IN_WATER_PRESSURE) == HIGH)
-      break;
     delay(1000);
+    log("waiting for water pressure and oil pressure to drop.....");
+    if (digitalRead(IN_OIL_PRESSURE_SWITCH) == HIGH && digitalRead(IN_WATER_PRESSURE) == HIGH){    
+        close_valves();
+        mode_auto = 1;
+        startup_attempt = 0;
+        pump_is_now_running = 0;
+        break;
+    }   
   }
   close_valves();
+  mode_auto = 1;
+  startup_attempt = 0;
+  pump_is_now_running = 0;
 }
+  /*  
+  *   Pump will start if; pump is not already started || no valves are open
+  *   Pump will try 2 attempts to start (when in 'auto mode'), checking the status of the  
+  *   IN_OIL_PRESSURE_SWITCH  && IN_WATER_PRESSURE   
+  */
 
-/* blocking */
 void do_startup() {
   log(__func__);
   int cnt;
   char buf[24];
 
-  if (pump_is_running()) {
+  if (pump_is_now_running) {
     log("pump is already running!");
     return;
   }
@@ -216,19 +301,20 @@ void do_startup() {
 
   /* manual mode we assume the operator knows best and will not limit
    * startup attempts */
-  if (mode_auto) {
-    if (startup_attempt >= MAX_STARTUP_ATTEMPTS) {
-      alert("could not start!");
-      startup_attempt = 0;
-      return;
-    }
+   
+  
+   if (startup_attempt >= MAX_STARTUP_ATTEMPTS) {
+     stop_pump_alert();
+     startup_attempt = 0;
+     return;
+   }
     startup_attempt++;
     sprintf(buf, "start attempt %d", startup_attempt);
     log(buf);
-  }
-
+    
   log("ignition on...");
   digitalWrite(OUT_IGN, HIGH);
+  //ignition_on = digitalRead(OUT_IGN);
   ignition_on = 1;
   delay(CRANKING_DELAY * 1000);
 
@@ -238,38 +324,88 @@ void do_startup() {
   digitalWrite(OUT_START, LOW);
 
   for (cnt = 0; cnt < WATER_PRESSURE_WAIT_MAX; cnt++) {
-    /* check pressue valve every 1 second */
+    /* check pressure valve every 1 second */
     delay(1000);
-    log("wait for water pressure...");
-    if (digitalRead(IN_WATER_PRESSURE) == LOW)
-      break;
+     
+      if (digitalRead(IN_OIL_PRESSURE_SWITCH) == LOW){
+         log("oil pressure is good");
+      }
+        else { 
+          log("waiting for oil pressure......");
+        }
+
+      if (digitalRead(IN_WATER_PRESSURE) == LOW){
+          log("water pressure is good");
+      }
+        else { 
+          log("waiting for water pressure......");
+        }
+     
+    if (digitalRead(IN_OIL_PRESSURE_SWITCH) == LOW && digitalRead(IN_WATER_PRESSURE) == LOW){
+      log("pump_is_now_running = 1");
+      pump_is_now_running = 1;
+      startup_attempt = 0;
+      break;  
+    } 
   }
+    if (startup_attempt == MAX_STARTUP_ATTEMPTS){
+        
+      log("pump did not start after 2nd attempt");
+      
+      if (digitalRead(IN_OIL_PRESSURE_SWITCH) == HIGH) {
+        log("because oil pressure is low");
+      }   
+      if (digitalRead(IN_WATER_PRESSURE) == HIGH) {
+         log("because water pressure is low");
+      }
+      stop_pump_alert();  
+    }
+
+   
   /* if we never achieve water pressure, next loop will shutdown */
 }
 
-/*
- * main loop
- * the order of the funtions is critical!
- */
+//main loop
+
 void loop() {
   delay(100);
 
   char buf[128] = "";
   int start_button = digitalRead(IN_START);
   int stop_button = digitalRead(IN_STOP);
-  int fuel = digitalRead(IN_FUEL);
-
+  int reset_button = digitalRead(IN_RESET_ALARMS);
+  low_fuel = digitalRead(IN_FUEL);
   /* time clock input high = contacts open = do not run */
   quiet_time = digitalRead(IN_TIME_CLOCK);
+  /* no water pressure when contact is open, input is high */
   no_water_pressure = digitalRead(IN_WATER_PRESSURE);
+  
+  /*Brad's additions
+    reads the status of the ignition switch
+    and the tank valves on each void loop pass */
+  ignition_status = digitalRead(OUT_IGN);
+  tank_1_valve_open = digitalRead(OUT_TANK_1_VALVE);
+  tank_2_valve_open = digitalRead(OUT_TANK_2_VALVE);
+  
+  // low oil pressure when contact is open, input is high 
+  low_oil_pressure = digitalRead(IN_OIL_PRESSURE_SWITCH);
 
-  sprintf(buf, "auto mode %s", mode_auto ? "on" : "off");
+  //provides realtime status to serial output
+  sprintf(buf, "time clock is %s", quiet_time ? "off" : "on");
   log(buf);
-  sprintf(buf, "ignition %s", ignition_on ? "on" : "off");
+  sprintf(buf, "auto mode is %s", mode_auto ? "on" : "off");
   log(buf);
-  sprintf(buf, "pump is running %s", pump_is_running() ? "yes" : "no");
+  sprintf(buf, "ignition is %s", ignition_on ? "on" : "off");
+  log(buf);
+  sprintf(buf, "pump is running %s", pump_is_now_running ? "yes" : "no");
+  log(buf);
+  sprintf(buf, "ignition output is %s", ignition_status ? "on" : "off");
   log(buf);
   sprintf(buf, "water pressure %s", no_water_pressure ? "no" : "yes");
+  log(buf);
+  sprintf(buf, "low oil pressure %s", low_oil_pressure ? "no" : "yes");
+  log(buf);
+  sprintf(buf, "low fuel %s", low_fuel ? "no" : "yes");
   log(buf);
   sprintf(buf, "tank 1: lim %d float %d valve %s",
     digitalRead(IN_TANK_1_LIM),
@@ -282,40 +418,58 @@ void loop() {
     tank_2_valve_open ? "open" : "closed");
   log(buf);
 
-  if (no_water_pressure || tanks_full() || mode_auto && quiet_time)
-    do_shutdown();
+// check if fuel is low, shutdown (if pump is running) and turn on low fuel alert
+  if (!low_fuel) {
+   log("fuel low");
+   low_fuel_alert("alert");   
+}
 
-  if (!fuel) {
-    do_shutdown();
-    alert("fuel low");
-  }
+/*    the start button will place the program into "manual mode", start the pump and 
+ *    fill the respective tanks until each limit switch turns off
+ *    Note: When in 'manual mode', the program will only look at the limit switches
+*/
 
-  if (!start_button) {
+  if (!pump_is_now_running && !start_button) {
     log("start button pressed");
     log("turn auto mode off");
     mode_auto = 0;
-    /* manual start, we only care about the limit switches. */
-    if (digitalRead(IN_TANK_1_LIM) == LOW)
+    
+    if (digitalRead(IN_TANK_1_LIM) == LOW){
       do_tank_1_valve_open();
-    if (digitalRead(IN_TANK_2_LIM) == LOW)
+      do_startup();
+    }
+    if (digitalRead(IN_TANK_2_LIM) == LOW){
       do_tank_2_valve_open();
-    do_startup();
+      do_startup();
+    }
   }
 
-  /*
-   * stop button causes alert which means we do nothing forever until the
-   * start button is pressed.
-   * change back to auto mode.
-   */
-  if (!stop_button) {
-    log("stop button pressed");
-    log("turn auto mode on");
-    mode_auto = 1;
-    alert("stopped");
-  }
+    // to trigger the second pass of manual start attempt
+    if ( startup_attempt >= 1 && !pump_is_now_running && !mode_auto) {
+      if (digitalRead(IN_TANK_1_LIM) == HIGH || digitalRead(IN_TANK_2_LIM) == HIGH) {
+        do_startup();
+      }
+    }
 
-  /* auto pump mode only reads the tank floats */
-  if (!quiet_time && mode_auto) {
+
+
+/*  stop button causes alert which means we do nothing forever until the
+*   reset button is pressed. change back to auto mode.
+*/
+ 
+    if (pump_is_now_running && !stop_button) {
+      log("stop button pressed");
+      log("turn auto mode on");
+      mode_auto = 1;
+      stop_pump_alert();
+    }
+
+  //  if the pump is NOT running & time clock is ON and in Auto Mode
+  //  auto pump mode only reads the tank floats
+    
+  quiet_time = digitalRead(IN_TIME_CLOCK);
+
+  if (!pump_is_now_running && !quiet_time && mode_auto) {
     if (digitalRead(IN_TANK_1_FLOAT) == LOW) {
       do_tank_1_valve_open();
       do_startup();
@@ -323,6 +477,92 @@ void loop() {
     if (digitalRead(IN_TANK_2_FLOAT) == LOW) {
       do_tank_2_valve_open();
       do_startup();
+    }   
+  }
+  
+   //  I have added the 'do_shutdown' statements to
+  //  resolve a float switch bounce on and off situation
+  
+    if ( startup_attempt >= 1 && !pump_is_now_running && !quiet_time && mode_auto) {
+      if (digitalRead(IN_TANK_1_FLOAT) == HIGH && digitalRead(IN_TANK_2_FLOAT) == HIGH) {
+        do_shutdown();
+      }
     }
+
+   //  I have added the 'close' statements to
+  //  resolve a limit switch bounce on and off situation
+  
+    if ( startup_attempt >= 1 && !pump_is_now_running && !mode_auto) {
+      if (digitalRead(IN_TANK_1_LIM) == HIGH && digitalRead(IN_TANK_2_LIM) == HIGH) {
+        do_shutdown();
+      }
+    }
+
+    
+//while pump is running, check water and oil pressure is good, else shutdown
+
+    low_oil_pressure = digitalRead(IN_OIL_PRESSURE_SWITCH);
+    no_water_pressure = digitalRead(IN_WATER_PRESSURE);
+    
+    if (pump_is_now_running) {
+      if (!no_water_pressure && !low_oil_pressure){
+          log("pump is running, water and oil pressure is good");
+    }  
+      if (no_water_pressure) {
+          log("pump is running, BUT water pressure is not good");
+          low_water_pressure_alert("alert");
+    }
+      if (low_oil_pressure) {
+           log("pump is running, BUT oil pressure is not good");
+           oil_pressure_alert("alert");  
+     }
+  }
+/*  should not be needed now
+*   while pump is running, shutdown if all float & limit switches are off
+*     if (!pump_is_now_running && tanks_full() )
+*      do_shutdown();
+*/
+
+//deals with the floats switch changes when pump is running & in auto mode
+  
+  if (pump_is_now_running && mode_auto) {
+    if (digitalRead(IN_TANK_1_FLOAT) == HIGH && digitalRead(IN_TANK_2_FLOAT) == HIGH){
+      log("pump is running, both float switches are off");
+      do_shutdown();
+    }
+     if (digitalRead(IN_TANK_1_FLOAT) == HIGH && digitalRead(IN_TANK_2_FLOAT) == LOW){
+       do_tank_1_valve_close();
+       do_tank_2_valve_open();
+    }        
+     if (digitalRead(IN_TANK_1_FLOAT) == LOW && digitalRead(IN_TANK_2_FLOAT) == HIGH){
+       do_tank_1_valve_open();
+       do_tank_2_valve_close();
+    }          
+      if (digitalRead(IN_TANK_1_FLOAT) == LOW && digitalRead(IN_TANK_2_FLOAT) == LOW){
+       do_tank_1_valve_open();
+       do_tank_2_valve_open();
+    }
+  }
+
+  
+//deals with the limit switch changes when pump is running & in manual mode
+
+ if (pump_is_now_running && !mode_auto) {
+    if (digitalRead(IN_TANK_1_LIM) == HIGH && digitalRead(IN_TANK_2_LIM) == HIGH){
+      log("pump is running, both limit switches are off, pump will be shutdown");
+      do_shutdown();
+    }            
+      if (digitalRead(IN_TANK_1_LIM) == LOW && digitalRead(IN_TANK_2_LIM) == HIGH){
+       do_tank_1_valve_open();
+       do_tank_2_valve_close();
+    }      
+      if (digitalRead(IN_TANK_1_LIM) == HIGH && digitalRead(IN_TANK_2_LIM) == LOW){
+        do_tank_1_valve_close();
+        do_tank_2_valve_open();
+    }        
+      if (digitalRead(IN_TANK_1_LIM) == LOW && digitalRead(IN_TANK_2_LIM) == LOW){
+        do_tank_1_valve_open();
+        do_tank_2_valve_open();
+    }                     
   }
 }
