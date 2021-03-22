@@ -97,7 +97,7 @@ void setup() {
   pinMode(IN_FUEL, INPUT_PULLUP);
   pinMode(IN_WATER_PRESSURE, INPUT_PULLUP);
   pinMode(IN_OIL_PRESSURE_SWITCH, INPUT_PULLUP);
-  pinMode(IN_BATT, INPUT_PULLUP);
+  pinMode(IN_BATT, INPUT);
   
   pinMode(OUT_IGN, OUTPUT);
   pinMode(OUT_START, OUTPUT);
@@ -129,7 +129,7 @@ void log(const char *buf) {
 }
 
 #define VREF        4.96      // measured from 5v on arduino with fluke
-#define VDIVFACTOR  3.03982   // measured with fluke 12.29/4.043 out
+#define VDIVFACTOR  3.09884   // measured with fluke 12.29/3.966 out
 #define R1          10000.0    // nominal
 #define R2          4700.0    // nominal
 #define R1M          9830.0    // measured
@@ -148,13 +148,13 @@ float readbatt()
   // method 1: work out v at VIN based on resistors 4.7k and 10k
   // Vin = Vout * (R1 + R2) / R2
   // measured resistor values
-  sprintf(buf, "battery %sV", dtostrf((vmeasured*(R1M + R2M))/R2M, 2, 2, voltstr));
+  sprintf(buf, "battery mes %sV", dtostrf((vmeasured*(R1M + R2M))/R2M, 2, 2, voltstr));
   log(buf);
   // nominal resistor values
   sprintf(buf, "battery nom %sV", dtostrf((vmeasured*(R1 + R2))/R2, 2, 2, voltstr));
   log(buf);
   // method 2: measure the real circuit and apply a constant value
-  sprintf(buf, "battery mes %sV", dtostrf(vmeasured*VDIVFACTOR, 2, 2, voltstr));
+  sprintf(buf, "battery con %sV", dtostrf(vmeasured*VDIVFACTOR, 2, 2, voltstr));
   log(buf);
 
   v = vmeasured*VDIVFACTOR;
