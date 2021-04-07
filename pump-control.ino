@@ -1,21 +1,9 @@
+
 /* vi:set tabstop=2: shiftwidth=2: softtabstop=2: expandtab: */
 /* :e ++ff=dos then remove ^M */
 /*
  * Pump control system
  *
- * Update v1.1: 
- * 1. Added IN_RESET_ALARMS to reset alarms
- * 2. Modified the operation of the IN_STOP
- *    to shutdown pump turn on alarm
- * 2. Added outputs to the logging
- * 3. All test result issues resolved
- * 4. Test for oil pressure on startup
- * 
- * Update v1.0: 
- * 1. Added oil pressure input
- * 2. Added inputs to the logging
- * 3. Added fuel alert output & oil pressure alert output
- * 
  * Each pin can provide or receive a maximum of 40 mA and has an internal
  * pull-up resistor (disconnected by default) of 20-50 kOhms.
  *
@@ -32,13 +20,41 @@
  * at or above its limit. This way, if no limit switches are fitted, we always
  * read them as if the tank is full, so only the float switches will drive
  * actions.
- *
  */
+
+// For half-duplex rs485 communication between Arduino's,
+//over my Cat6 cable from the Dam Pump to the Tank(s)
+//#include <ArduinoRS485.h>
+
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
+// Connect pins 2 to SDA & 3 toSCL on the Leonardo board.
+// Connect pins SDA to A4, SCL to A5 on an UNO
+// Install the "LiquidCrystalI2C" library
+
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+//initialize the liquid crystal library and create an "lcd" instance
+//the first parameter is the I2C address - for the 20x4 it is 0x27
+//the second parameter is how many columns are on your screen
+//the third parameter is how many rows are on your screen
+//If display is blank, run I2C scanner to find correct address
+//To run multiple displays, short the A0,A1 or A2 jumpers on the I2C adapter
+//to get different addresses on different displays. Then create
+//new instances with LiquidCrystal_I2C
+
+
+// For 2.4g - 2.5g wireless comunications between Adruinos using the RF24.h library.
+//#include <nRF24L01.h>
+//#include <RF24.h>
+//#include <RF24_config.h>
+//#include <printf.h>
+
+ 
 //Inputs pullup ACTIVE LOW
 #define IN_BATT                         A0
 #define IN_RESET_ALARMS                 1
-#define IN_START                        2
-#define IN_STOP                         3
+#define LCD_RX                          2
+#define LCD_TX                          3
 #define IN_TANK_1_FLOAT                 4
 #define IN_TANK_1_LIM                   5
 #define IN_TANK_2_FLOAT                 6
@@ -47,22 +63,21 @@
 #define IN_FUEL                         9
 #define IN_WATER_PRESSURE               10
 #define IN_OIL_PRESSURE_SWITCH          11
+#define IN_START                        12
+#define IN_STOP                         13
 
 //Outputs ACTIVE HIGH
-#define OUT_OIL_PRESSURE_ALERT          12
-#define OUT_LOW_FUEL_ALERT              13
-#define OUT_IGN                         0
-#define OUT_START                       A1
-#define OUT_PRESSURE_OVERRIDE           A2
+#define OUT_IGN                         A1
+#define OUT_START                       A2
 #define OUT_TANK_1_VALVE                A3
 #define OUT_TANK_2_VALVE                A4
-#define OUT_WATER_PRESSURE_ALERT        A5
+#define OUT_ALERT                       A5
 
 //max time to wait for pressure switch to open after ignition off (seconds)
 #define IGN_OFF_WAIT_MAX                15
 #define CRANKING_DELAY                  5
 #define CRANKING_TIME                   7
-#define WATER_PRESSURE_WAIT_MAX         15
+#define PRESSURE_WAIT_MAX               15
 #define MAX_STARTUP_ATTEMPTS            2
 
 /* uncomment to output to USB serial port */
@@ -101,13 +116,13 @@ void setup() {
   
   pinMode(OUT_IGN, OUTPUT);
   pinMode(OUT_START, OUTPUT);
-  pinMode(OUT_PRESSURE_OVERRIDE, OUTPUT);
   pinMode(OUT_TANK_1_VALVE, OUTPUT);
   pinMode(OUT_TANK_2_VALVE, OUTPUT);
-  pinMode(OUT_WATER_PRESSURE_ALERT, OUTPUT);
-  pinMode(OUT_OIL_PRESSURE_ALERT, OUTPUT);
-  pinMode(OUT_LOW_FUEL_ALERT, OUTPUT);
-
+  pinMode(OUT_ALERT, OUTPUT);
+ 
+  lcd.init();
+  lcd.backlight();
+  
   #ifdef debug_serial_USB
   /* USB port ttyACM */
   Serial.begin(BAUD);
@@ -128,12 +143,8 @@ void log(const char *buf) {
   #endif
 }
 
-#define VREF        4.96      // measured from 5v on arduino with fluke
+#define VREF        5.12      // measured from 5v on arduino with fluke
 #define VDIVFACTOR  3.09884   // measured with fluke 12.29/3.966 out
-#define R1          10000.0    // nominal
-#define R2          4700.0    // nominal
-#define R1M          9830.0    // measured
-#define R2M          4690.0    // measured
 
 float readbatt()
 {
@@ -142,110 +153,26 @@ float readbatt()
   vmeasured = a*VREF/1024.0;
   char buf[64];
   char voltstr[10];
-  // measured input voltage
-  sprintf(buf, "measured %sV", dtostrf(vmeasured, 2, 2, voltstr));
-  log(buf);
-  // method 1: work out v at VIN based on resistors 4.7k and 10k
-  // Vin = Vout * (R1 + R2) / R2
-  // measured resistor values
-  sprintf(buf, "battery mes %sV", dtostrf((vmeasured*(R1M + R2M))/R2M, 2, 2, voltstr));
-  log(buf);
-  // nominal resistor values
-  sprintf(buf, "battery nom %sV", dtostrf((vmeasured*(R1 + R2))/R2, 2, 2, voltstr));
-  log(buf);
-  // method 2: measure the real circuit and apply a constant value
-  sprintf(buf, "battery con %sV", dtostrf(vmeasured*VDIVFACTOR, 2, 2, voltstr));
-  log(buf);
-
   v = vmeasured*VDIVFACTOR;
   return v;
 }
 
-//defining the alerts
+//defining alert due low fuel, low water or oil pressure
 
-void oil_pressure_alert(const char *msg) {
-  /* alert operator and do nothing forever until start button pressed */
+void alert(const char *msg) {
+  
   char buf[64];
   sprintf(buf, "Alert: %s", msg);
   log(buf);
-
-    log("low oil pressure, shutting down pump and valves");
-    digitalWrite(OUT_OIL_PRESSURE_ALERT, HIGH);
-    do_shutdown();
+  log("pump shutdown and turn on alert");
+ 
+  digitalWrite(OUT_ALERT, HIGH);
   
   while (1) {
     delay(10);
     if (!digitalRead(IN_RESET_ALARMS)) {
-      log("reset button pressed, low oil pressure alert cleared");
-      digitalWrite(OUT_OIL_PRESSURE_ALERT, LOW);
-      /* wait for button release so this button press does not
-       * also cause a manual startup. */
-      while (!digitalRead(IN_RESET_ALARMS))
-        delay(10);
-      break;
-    }
-  }
-}
-
-void low_fuel_alert(const char *msg) {
-  /* alert operator and do nothing forever until start button pressed */
-  char buf[64];
-  sprintf(buf, "Alert: %s", msg);
-  log(buf);
-
-  log("low fuel, shutting down pump and valves");
-  digitalWrite(OUT_LOW_FUEL_ALERT, HIGH);
-  do_shutdown();
-  
-  while (1) {
-    delay(10);
-    if (!digitalRead(IN_RESET_ALARMS)) {
-      log("reset button pressed, alert finished");
-      digitalWrite(OUT_LOW_FUEL_ALERT, LOW);
-      /* wait for button release so this button press does not
-       * also cause a manual startup. */
-      while (!digitalRead(IN_RESET_ALARMS))
-        delay(10);
-      break;
-    }
-  }
-}
-
-void low_water_pressure_alert(const char *msg) {
-  /* alert operator and do nothing forever until start button pressed */
-  char buf[64];
-  sprintf(buf, "Alert: %s", msg);
-  log(buf);
-  log("low water pressure, shutting down pump and valves");
-  digitalWrite(OUT_WATER_PRESSURE_ALERT, HIGH);
-  do_shutdown();
-  
-  while (1) {
-    delay(10);
-    if (!digitalRead(IN_RESET_ALARMS)) {
-      log("reset button pressed, alert finished");
-      digitalWrite(OUT_WATER_PRESSURE_ALERT, LOW);
-      /* wait for button release so this button press does not
-       * also cause a manual startup. */
-      while (!digitalRead(IN_RESET_ALARMS))
-        delay(10);
-      break;
-    }
-  }
-}
-
-void stop_pump_alert() {
-  log("shutdown pump and turn on alerts");
-  digitalWrite(OUT_WATER_PRESSURE_ALERT, HIGH);
-  digitalWrite(OUT_OIL_PRESSURE_ALERT, HIGH);
-  
-  do_shutdown();
-  while (1) {
-    delay(10);
-    if (!digitalRead(IN_RESET_ALARMS)) {
-      log("reset button pressed, alert finished");
-      digitalWrite(OUT_WATER_PRESSURE_ALERT, LOW);
-      digitalWrite(OUT_OIL_PRESSURE_ALERT, LOW);
+      log("reset button pressed, alert cleared");
+      digitalWrite(OUT_ALERT, LOW);
       /* wait for button release so this button press does not
        * also cause a manual startup. */
       while (!digitalRead(IN_RESET_ALARMS))
@@ -280,6 +207,7 @@ void do_tank_2_valve_close() {
   
 }
 void close_valves() {
+  log(__func__);
   do_tank_1_valve_close();
   do_tank_2_valve_close();
 }
@@ -298,6 +226,10 @@ void do_shutdown() {
   for (cnt = 0; cnt < IGN_OFF_WAIT_MAX; cnt++) {
     delay(1000);
     log("waiting for water pressure and oil pressure to drop.....");
+
+      lcd.setCursor(0,0); 
+      lcd.print("Shutting Down Pump  ");
+   
     if (digitalRead(IN_OIL_PRESSURE_SWITCH) == HIGH && digitalRead(IN_WATER_PRESSURE) == HIGH){    
         close_valves();
         mode_auto = 1;
@@ -309,11 +241,13 @@ void do_shutdown() {
   close_valves();
   mode_auto = 1;
   startup_attempt = 0;
+   lcd.setCursor(0,0);
+   lcd.print("Pump is shut down   "); 
   pump_is_now_running = 0;
 }
   /*  
   *   Pump will start if; pump is not already started || no valves are open
-  *   Pump will try 2 attempts to start (when in 'auto mode'), checking the status of the  
+  *   Pump will try 2 attempts to start, checking the status of the  
   *   IN_OIL_PRESSURE_SWITCH  && IN_WATER_PRESSURE   
   */
 
@@ -333,67 +267,95 @@ void do_startup() {
 
   /* manual mode we assume the operator knows best and will not limit
    * startup attempts */
-   
-  
-   if (startup_attempt >= MAX_STARTUP_ATTEMPTS) {
-     stop_pump_alert();
-     startup_attempt = 0;
-     return;
-   }
-    startup_attempt++;
+          
+   startup_attempt++;
     sprintf(buf, "start attempt %d", startup_attempt);
     log(buf);
-    
-  log("ignition on...");
-  digitalWrite(OUT_IGN, HIGH);
-  //ignition_on = digitalRead(OUT_IGN);
-  ignition_on = 1;
+      lcd.init();
+      lcd.setCursor(0,1);
+      lcd.print(buf);
+  
+  if(startup_attempt >= 2) {
+    digitalWrite(OUT_IGN, LOW);
+    lcd.setCursor(0,0);
+    lcd.print("Ignition OFF  "); 
+    delay(CRANKING_DELAY * 1000);
+  }
+      
+  //ignition_on
+    digitalWrite(OUT_IGN, HIGH);   
+    //log("ignition on...");
+    lcd.setCursor(0,0);
+    lcd.print("Ignition ON  "); 
+    ignition_on = 1;
+  
   delay(CRANKING_DELAY * 1000);
 
-  log("cranking...");
+  //log("cranking...");
+    
+    lcd.setCursor(0,1);
+    lcd.print("Start Cranking Pump ");
+
   digitalWrite(OUT_START, HIGH);
   delay(CRANKING_TIME * 1000);
   digitalWrite(OUT_START, LOW);
 
-  for (cnt = 0; cnt < WATER_PRESSURE_WAIT_MAX; cnt++) {
+  for (cnt = 0; cnt < PRESSURE_WAIT_MAX; cnt++) {
     /* check pressure valve every 1 second */
     delay(1000);
+
+    lcd.setCursor(0,1);
+    lcd.print("Waiting for pressure");
      
       if (digitalRead(IN_OIL_PRESSURE_SWITCH) == LOW){
-         log("oil pressure is good");
+         //log("oil pressure is good");
+          lcd.setCursor(0,2);
+          lcd.print("oil pressure good   ");
       }
         else { 
-          log("waiting for oil pressure......");
+          //log("waiting for oil pressure......");
+          lcd.setCursor(0,2);
+          lcd.print("wait 4 oil pressure ");
         }
-
+        
       if (digitalRead(IN_WATER_PRESSURE) == LOW){
-          log("water pressure is good");
+          //log("water pressure is good");
+          lcd.setCursor(0,3);
+          lcd.print("water pressure good ");
       }
         else { 
-          log("waiting for water pressure......");
+          //log("waiting for water pressure......");
+          lcd.setCursor(0,3);
+          lcd.print("wait4 water pressure");      
         }
      
     if (digitalRead(IN_OIL_PRESSURE_SWITCH) == LOW && digitalRead(IN_WATER_PRESSURE) == LOW){
-      log("pump_is_now_running = 1");
+      log("pump is now running");    
       pump_is_now_running = 1;
       startup_attempt = 0;
       break;  
     } 
   }
-    if (startup_attempt == MAX_STARTUP_ATTEMPTS){
+    if (startup_attempt >= MAX_STARTUP_ATTEMPTS){
         
       log("pump did not start after 2nd attempt");
-      
+            
       if (digitalRead(IN_OIL_PRESSURE_SWITCH) == HIGH) {
         log("because oil pressure is low");
+        lcd.setCursor(0,2);
+        lcd.print("oil pressure low    ");  
       }   
       if (digitalRead(IN_WATER_PRESSURE) == HIGH) {
          log("because water pressure is low");
-      }
-      stop_pump_alert();  
+         lcd.setCursor(0,3);
+         lcd.print("water pressure low  ");  
+      }  
+        lcd.setCursor(0,1);
+        lcd.print("fail on 2nd attempt ");  
+      do_shutdown();
+      alert("failed on second startup attempt");  
     }
-
-   
+  
   /* if we never achieve water pressure, next loop will shutdown */
 }
 
@@ -401,6 +363,9 @@ void do_startup() {
 
 void loop() {
   delay(100);
+  
+  //Initialise (clear) LC Display
+  lcd.init();
 
   char buf[128] = "";
   int start_button = digitalRead(IN_START);
@@ -414,8 +379,7 @@ void loop() {
   /* no water pressure when contact is open, input is high */
   no_water_pressure = digitalRead(IN_WATER_PRESSURE);
   
-  /*Brad's additions
-    reads the status of the ignition switch
+  /* reads the status of the ignition switch
     and the tank valves on each void loop pass */
   ignition_status = digitalRead(OUT_IGN);
   tank_1_valve_open = digitalRead(OUT_TANK_1_VALVE);
@@ -433,32 +397,48 @@ void loop() {
   log(buf);
   sprintf(buf, "pump is running %s", pump_is_now_running ? "yes" : "no");
   log(buf);
-  sprintf(buf, "ignition output is %s", ignition_status ? "on" : "off");
-  log(buf);
+  //sprintf(buf, "ignition output is %s", ignition_status ? "on" : "off");
+  //log(buf);
   sprintf(buf, "water pressure %s", no_water_pressure ? "no" : "yes");
   log(buf);
   sprintf(buf, "low oil pressure %s", low_oil_pressure ? "no" : "yes");
   log(buf);
   sprintf(buf, "low fuel %s", low_fuel ? "no" : "yes");
   log(buf);
-  sprintf(buf, "tank 1: lim %d float %d valve %s",
+  sprintf(buf, "T1:L%d F%d V %s",
     digitalRead(IN_TANK_1_LIM),
     digitalRead(IN_TANK_1_FLOAT),
     tank_1_valve_open ? "open" : "closed");
   log(buf);
-  sprintf(buf, "tank 2: lim %d float %d valve %s",
+  
+    lcd.setCursor(0,1);
+    lcd.print(buf);
+  
+  sprintf(buf, "T2:L%d F%d V %s",
     digitalRead(IN_TANK_2_LIM),
     digitalRead(IN_TANK_2_FLOAT),
     tank_2_valve_open ? "open" : "closed");
   log(buf);
+  
+    lcd.setCursor(0,2);
+    lcd.print(buf);
+  
   char voltstr[10];
-  sprintf(buf, "battery %sV", dtostrf(volts, 2, 2, voltstr));
+  sprintf(buf, "Battery %sV", dtostrf(volts, 2, 2, voltstr));
   log(buf);
-
+    lcd.setCursor(0,3);
+    lcd.print(buf);
+     
 // check if fuel is low, shutdown (if pump is running) and turn on low fuel alert
   if (!low_fuel) {
-   log("fuel low");
-   low_fuel_alert("alert");   
+    
+   do_shutdown();    
+    lcd.init();
+    lcd.setCursor(0,0);
+    lcd.print("Low Fuel ALERT");
+    lcd.setCursor(0,1);
+    lcd.print("Resume Press Reset");  
+   alert("low fuel");   
 }
 
 /*    the start button will place the program into "manual mode", start the pump and 
@@ -488,17 +468,21 @@ void loop() {
       }
     }
 
-
-
-/*  stop button causes alert which means we do nothing forever until the
-*   reset button is pressed. change back to auto mode.
-*/
+//  stop button causes alert which means we do nothing forever until the
+//  reset button is pressed. change back to auto mode.
  
     if (pump_is_now_running && !stop_button) {
       log("stop button pressed");
       log("turn auto mode on");
       mode_auto = 1;
-      stop_pump_alert();
+      
+      do_shutdown();    
+        lcd.init();
+        lcd.setCursor(0,0);
+        lcd.print("Stop button pressed");
+        lcd.setCursor(0,1);
+        lcd.print("Resume Press Reset");  
+      alert("stop button pressed");
     }
 
   //  if the pump is NOT running & time clock is ON and in Auto Mode
@@ -507,6 +491,10 @@ void loop() {
   quiet_time = digitalRead(IN_TIME_CLOCK);
 
   if (!pump_is_now_running && !quiet_time && mode_auto) {
+
+    lcd.setCursor(0,0);
+    lcd.print("Pump is not running ");
+    
     if (digitalRead(IN_TANK_1_FLOAT) == LOW) {
       do_tank_1_valve_open();
       do_startup();
@@ -534,7 +522,6 @@ void loop() {
         do_shutdown();
       }
     }
-
     
 //while pump is running, check water and oil pressure is good, else shutdown
 
@@ -543,22 +530,35 @@ void loop() {
     
     if (pump_is_now_running) {
       if (!no_water_pressure && !low_oil_pressure){
-          log("pump is running, water and oil pressure is good");
+          log("pump is running, water and oil pressure is good");  
+          lcd.setCursor(0,0);
+          lcd.print("Pump is running     ");
+
     }  
       if (no_water_pressure) {
-          log("pump is running, BUT water pressure is not good");
-          low_water_pressure_alert("alert");
+          log("pump is running, BUT water pressure is NOT good");        
+          
+          do_shutdown();         
+            lcd.init();
+            lcd.setCursor(0,0);      
+            lcd.print("Low Water Pressure");
+            lcd.setCursor(0,1);         
+            lcd.print("Resume Press Reset");
+           alert("low water pressure"); 
+          
     }
       if (low_oil_pressure) {
-           log("pump is running, BUT oil pressure is not good");
-           oil_pressure_alert("alert");  
+           log("pump is running, BUT oil pressure is not good");    
+           
+           do_shutdown();        
+            lcd.init();
+            lcd.setCursor(0,0);
+            lcd.print("Low Oil Pressure    ");
+            lcd.setCursor(0,1);
+            lcd.print("Resume Press Reset  ");          
+           alert("low Oil pressure"); 
      }
   }
-/*  should not be needed now
-*   while pump is running, shutdown if all float & limit switches are off
-*     if (!pump_is_now_running && tanks_full() )
-*      do_shutdown();
-*/
 
 //deals with the floats switch changes when pump is running & in auto mode
   
@@ -570,17 +570,19 @@ void loop() {
      if (digitalRead(IN_TANK_1_FLOAT) == HIGH && digitalRead(IN_TANK_2_FLOAT) == LOW){
        do_tank_1_valve_close();
        do_tank_2_valve_open();
+               
     }        
      if (digitalRead(IN_TANK_1_FLOAT) == LOW && digitalRead(IN_TANK_2_FLOAT) == HIGH){
        do_tank_1_valve_open();
        do_tank_2_valve_close();
+
     }          
       if (digitalRead(IN_TANK_1_FLOAT) == LOW && digitalRead(IN_TANK_2_FLOAT) == LOW){
        do_tank_1_valve_open();
        do_tank_2_valve_open();
+
     }
   }
-
   
 //deals with the limit switch changes when pump is running & in manual mode
 
