@@ -146,8 +146,7 @@ void log(const char *buf) {
 #define VREF        5.12      // measured from 5v on arduino with fluke
 #define VDIVFACTOR  3.09884   // measured with fluke 12.29/3.966 out
 
-float readbatt()
-{
+float readbatt() {
   float a, v, vmeasured;
   a = analogRead(IN_BATT);
   vmeasured = a*VREF/1024.0;
@@ -156,37 +155,37 @@ float readbatt()
 }
 
 void lcd_writeln(uint8_t col, uint8_t row, const char *buf) {
-	lcd.setCursor(col, row);
-	// we want to trim to 20 chars and pad with spaces so we get a clean line
-	// we don't want to mess with the real buf so copy what we need into a new buf here
-	// 21 chars so we can add a null terminator at the end in-case we print as a
+  lcd.setCursor(col, row);
+  // we want to trim to 20 chars and pad with spaces so we get a clean line
+  // we don't want to mess with the real buf so copy what we need into a new buf here
+  // 21 chars so we can add a null terminator at the end in-case we print as a
   // string too.
-	char lcdbuf[21];
-	int len = strlen(buf);
-	if (len > 20)
-		len = 20;
-	memcpy(lcdbuf, buf, len);
-	// pad with spaces to overwrite previous characters on display
-	while (len < 20) {
-		lcdbuf[len] = ' ';
-		len++;
-	}
-	// add null terminator to signal end of string
+  char lcdbuf[21];
+  int len = strlen(buf);
+  if (len > 20)
+    len = 20;
+  memcpy(lcdbuf, buf, len);
+  // pad with spaces to overwrite previous characters on display
+  while (len < 20) {
+    lcdbuf[len] = ' ';
+    len++;
+  }
+  // add null terminator to signal end of string
   // not required for lcd print, but required for normal string printing
-	lcdbuf[len] = '\0';
-	//log("lcdbuf:");
-	//log(lcdbuf);
-	lcd.print(lcdbuf);
+  lcdbuf[len] = '\0';
+  //log("lcdbuf:");
+  //log(lcdbuf);
+  lcd.print(lcdbuf);
 }
 
 //defining alert due low fuel, low water or oil pressure
 void alert(const char *msg) {
-	do_shutdown();
-	lcd_writeln(0, 0, "Alert!");
-	lcd_writeln(0, 1, msg);
-	lcd_writeln(0, 2, "");
+  do_shutdown();
+  lcd_writeln(0, 0, "Alert!");
+  lcd_writeln(0, 1, msg);
+  lcd_writeln(0, 2, "");
   lcd_writeln(0, 3, "Press Alarm Reset");
-	// this buf is the global buf
+  // this buf is the global buf
   sprintf(buf, "Alert: %s", msg);
   log(buf);
   digitalWrite(OUT_ALERT, HIGH);
@@ -289,12 +288,12 @@ void do_startup() {
   log(buf);
   lcd_writeln(0, 0, buf);
 
-	// clear following lines that do not get used for a few seconds
+  // clear following lines that do not get used for a few seconds
   lcd_writeln(0, 1, "");
   lcd_writeln(0, 2, "");
   lcd_writeln(0, 3, "");
   
-	// a message stating why want to wait for the cranking delay time period
+  // a message stating why want to wait for the cranking delay time period
   if(startup_attempt >= 2) {
     //log("Ignition OFF");
     digitalWrite(OUT_IGN, LOW);
@@ -320,23 +319,23 @@ void do_startup() {
     delay(1000);
     lcd_writeln(0, 1, "Waiting for pressure");
 
-		char stat[3];
+    char stat[3];
     if (digitalRead(IN_OIL_PRESSURE_SWITCH) == LOW){
-			sprintf(stat, "OK");
+      sprintf(stat, "OK");
     }
-		else {
-			sprintf(stat, "NO");
+    else {
+      sprintf(stat, "NO");
     }
-		sprintf(buf, "oil pressure: %s", stat);
+    sprintf(buf, "oil pressure: %s", stat);
     lcd_writeln(0, 2, buf);
       
     if (digitalRead(IN_WATER_PRESSURE) == LOW){
-			sprintf(stat, "OK");
+      sprintf(stat, "OK");
     }
-		else {
-			sprintf(stat, "NO");
+    else {
+      sprintf(stat, "NO");
     }
-		sprintf(buf, "water pressure: %s", stat);
+    sprintf(buf, "water pressure: %s", stat);
     lcd_writeln(0, 3, buf);
     
     if (digitalRead(IN_OIL_PRESSURE_SWITCH) == LOW && digitalRead(IN_WATER_PRESSURE) == LOW){
@@ -364,8 +363,8 @@ void loop() {
   
   //Initialise (clear) LC Display
   //lcd.init();
-	// LCD is initialised in setup function, we don't need to clear it here
-	// because we simply overwrite the lines with new content.
+  // LCD is initialised in setup function, we don't need to clear it here
+  // because we simply overwrite the lines with new content.
 
   int start_button = digitalRead(IN_START);
   int stop_button = digitalRead(IN_STOP);
