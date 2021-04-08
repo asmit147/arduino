@@ -42,13 +42,11 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 //to get different addresses on different displays. Then create
 //new instances with LiquidCrystal_I2C
 
-
 // For 2.4g - 2.5g wireless comunications between Adruinos using the RF24.h library.
 //#include <nRF24L01.h>
 //#include <RF24.h>
 //#include <RF24_config.h>
 //#include <printf.h>
-
  
 //Inputs pullup ACTIVE LOW
 #define IN_BATT                         A0
@@ -98,6 +96,8 @@ int tank_2_valve_open = 0;
 int pump_is_now_running = 0;
 int ignition_status = 1;
 int low_oil_pressure = 1;
+
+char buf[64] = "";
 
 void setup() {
   /* initalise all inputs and outputs */
@@ -151,30 +151,51 @@ float readbatt()
   float a, v, vmeasured;
   a = analogRead(IN_BATT);
   vmeasured = a*VREF/1024.0;
-  char buf[64];
-  char voltstr[10];
   v = vmeasured*VDIVFACTOR;
   return v;
 }
 
-//defining alert due low fuel, low water or oil pressure
+void lcd_writeln(uint8_t col, uint8_t row, const char *buf) {
+	lcd.setCursor(col, row);
+	// we want to trim to 20 chars and pad with spaces so we get a clean line
+	// we don't want to mess with the real buf so copy what we need into a new buf here
+	// 21 chars so we can add a null terminator at the end in-case we print as a
+  // string too.
+	char lcdbuf[21];
+	int len = strlen(buf);
+	if (len > 20)
+		len = 20;
+	memcpy(lcdbuf, buf, len);
+	// pad with spaces to overwrite previous characters on display
+	while (len < 20) {
+		lcdbuf[len] = ' ';
+		len++;
+	}
+	// add null terminator to signal end of string
+  // not required for lcd print, but required for normal string printing
+	lcdbuf[len] = '\0';
+	//log("lcdbuf:");
+	//log(lcdbuf);
+	lcd.print(lcdbuf);
+}
 
+//defining alert due low fuel, low water or oil pressure
 void alert(const char *msg) {
-  
-  char buf[64];
+	do_shutdown();
+	lcd_writeln(0, 0, "Alert!");
+	lcd_writeln(0, 1, msg);
+	lcd_writeln(0, 2, "");
+  lcd_writeln(0, 3, "Press Alarm Reset");
+	// this buf is the global buf
   sprintf(buf, "Alert: %s", msg);
   log(buf);
-  log("pump shutdown and turn on alert");
- 
   digitalWrite(OUT_ALERT, HIGH);
   
   while (1) {
     delay(10);
     if (!digitalRead(IN_RESET_ALARMS)) {
-      log("reset button pressed, alert cleared");
+      log("alarm reset!");
       digitalWrite(OUT_ALERT, LOW);
-      /* wait for button release so this button press does not
-       * also cause a manual startup. */
       while (!digitalRead(IN_RESET_ALARMS))
         delay(10);
       break;
@@ -225,24 +246,19 @@ void do_shutdown() {
   
   for (cnt = 0; cnt < IGN_OFF_WAIT_MAX; cnt++) {
     delay(1000);
-    log("waiting for water pressure and oil pressure to drop.....");
-
-      lcd.setCursor(0,0); 
-      lcd.print("Shutting Down Pump  ");
+    lcd_writeln(0, 0, "Shutting Down Pump");
    
     if (digitalRead(IN_OIL_PRESSURE_SWITCH) == HIGH && digitalRead(IN_WATER_PRESSURE) == HIGH){    
-        close_valves();
-        mode_auto = 1;
-        startup_attempt = 0;
-        pump_is_now_running = 0;
-        break;
+      close_valves();
+      mode_auto = 1;
+      startup_attempt = 0;
+      pump_is_now_running = 0;
+      break;
     }   
   }
   close_valves();
   mode_auto = 1;
   startup_attempt = 0;
-   lcd.setCursor(0,0);
-   lcd.print("Pump is shut down   "); 
   pump_is_now_running = 0;
 }
   /*  
@@ -268,95 +284,77 @@ void do_startup() {
   /* manual mode we assume the operator knows best and will not limit
    * startup attempts */
           
-   startup_attempt++;
-    sprintf(buf, "start attempt %d", startup_attempt);
-    log(buf);
-      lcd.init();
-      lcd.setCursor(0,1);
-      lcd.print(buf);
+  startup_attempt++;
+  sprintf(buf, "Start attempt: %d", startup_attempt);
+  log(buf);
+  lcd_writeln(0, 0, buf);
+
+	// clear following lines that do not get used for a few seconds
+  lcd_writeln(0, 1, "");
+  lcd_writeln(0, 2, "");
+  lcd_writeln(0, 3, "");
   
+	// a message stating why want to wait for the cranking delay time period
   if(startup_attempt >= 2) {
+    //log("Ignition OFF");
     digitalWrite(OUT_IGN, LOW);
-    lcd.setCursor(0,0);
-    lcd.print("Ignition OFF  "); 
     delay(CRANKING_DELAY * 1000);
   }
       
-  //ignition_on
-    digitalWrite(OUT_IGN, HIGH);   
-    //log("ignition on...");
-    lcd.setCursor(0,0);
-    lcd.print("Ignition ON  "); 
-    ignition_on = 1;
-  
+  //log("ignition on...");
+  digitalWrite(OUT_IGN, HIGH);
+  ignition_on = 1;
+
+  // CRANKING_DELAY is number of seconds
+  // delay function expects microseconds
   delay(CRANKING_DELAY * 1000);
 
-  //log("cranking...");
-    
-    lcd.setCursor(0,1);
-    lcd.print("Start Cranking Pump ");
+  lcd_writeln(0, 1, "Cranking...");
 
   digitalWrite(OUT_START, HIGH);
   delay(CRANKING_TIME * 1000);
   digitalWrite(OUT_START, LOW);
 
   for (cnt = 0; cnt < PRESSURE_WAIT_MAX; cnt++) {
-    /* check pressure valve every 1 second */
+    /* check pressure inputs every 1 second */
     delay(1000);
+    lcd_writeln(0, 1, "Waiting for pressure");
 
-    lcd.setCursor(0,1);
-    lcd.print("Waiting for pressure");
-     
-      if (digitalRead(IN_OIL_PRESSURE_SWITCH) == LOW){
-         //log("oil pressure is good");
-          lcd.setCursor(0,2);
-          lcd.print("oil pressure good   ");
-      }
-        else { 
-          //log("waiting for oil pressure......");
-          lcd.setCursor(0,2);
-          lcd.print("wait 4 oil pressure ");
-        }
-        
-      if (digitalRead(IN_WATER_PRESSURE) == LOW){
-          //log("water pressure is good");
-          lcd.setCursor(0,3);
-          lcd.print("water pressure good ");
-      }
-        else { 
-          //log("waiting for water pressure......");
-          lcd.setCursor(0,3);
-          lcd.print("wait4 water pressure");      
-        }
-     
+		char stat[3];
+    if (digitalRead(IN_OIL_PRESSURE_SWITCH) == LOW){
+			sprintf(stat, "OK");
+    }
+		else {
+			sprintf(stat, "NO");
+    }
+		sprintf(buf, "oil pressure: %s", stat);
+    lcd_writeln(0, 2, buf);
+      
+    if (digitalRead(IN_WATER_PRESSURE) == LOW){
+			sprintf(stat, "OK");
+    }
+		else {
+			sprintf(stat, "NO");
+    }
+		sprintf(buf, "water pressure: %s", stat);
+    lcd_writeln(0, 3, buf);
+    
     if (digitalRead(IN_OIL_PRESSURE_SWITCH) == LOW && digitalRead(IN_WATER_PRESSURE) == LOW){
-      log("pump is now running");    
+      //log("pump is now running"); this is indicated in main loop
       pump_is_now_running = 1;
       startup_attempt = 0;
       break;  
     } 
   }
-    if (startup_attempt >= MAX_STARTUP_ATTEMPTS){
-        
-      log("pump did not start after 2nd attempt");
-            
-      if (digitalRead(IN_OIL_PRESSURE_SWITCH) == HIGH) {
-        log("because oil pressure is low");
-        lcd.setCursor(0,2);
-        lcd.print("oil pressure low    ");  
-      }   
-      if (digitalRead(IN_WATER_PRESSURE) == HIGH) {
-         log("because water pressure is low");
-         lcd.setCursor(0,3);
-         lcd.print("water pressure low  ");  
-      }  
-        lcd.setCursor(0,1);
-        lcd.print("fail on 2nd attempt ");  
-      do_shutdown();
-      alert("failed on second startup attempt");  
+  if (startup_attempt >= MAX_STARTUP_ATTEMPTS){
+    log("pump did not start after 2nd attempt");
+    if (digitalRead(IN_OIL_PRESSURE_SWITCH) == HIGH) {
+      alert("oil pressure NO");
     }
-  
-  /* if we never achieve water pressure, next loop will shutdown */
+    if (digitalRead(IN_WATER_PRESSURE) == HIGH) {
+      alert("water pressure NO");
+    }
+  }
 }
 
 //main loop
@@ -365,9 +363,10 @@ void loop() {
   delay(100);
   
   //Initialise (clear) LC Display
-  lcd.init();
+  //lcd.init();
+	// LCD is initialised in setup function, we don't need to clear it here
+	// because we simply overwrite the lines with new content.
 
-  char buf[128] = "";
   int start_button = digitalRead(IN_START);
   int stop_button = digitalRead(IN_STOP);
   int reset_button = digitalRead(IN_RESET_ALARMS);
@@ -395,8 +394,9 @@ void loop() {
   log(buf);
   sprintf(buf, "ignition is %s", ignition_on ? "on" : "off");
   log(buf);
-  sprintf(buf, "pump is running %s", pump_is_now_running ? "yes" : "no");
+  sprintf(buf, "Pump%srunning", pump_is_now_running ? " " : " NOT ");
   log(buf);
+  lcd_writeln(0, 0, buf);
   //sprintf(buf, "ignition output is %s", ignition_status ? "on" : "off");
   //log(buf);
   sprintf(buf, "water pressure %s", no_water_pressure ? "no" : "yes");
@@ -410,9 +410,7 @@ void loop() {
     digitalRead(IN_TANK_1_FLOAT),
     tank_1_valve_open ? "open" : "closed");
   log(buf);
-  
-    lcd.setCursor(0,1);
-    lcd.print(buf);
+  lcd_writeln(0, 1, buf);
   
   sprintf(buf, "T2:L%d F%d V %s",
     digitalRead(IN_TANK_2_LIM),
@@ -420,25 +418,16 @@ void loop() {
     tank_2_valve_open ? "open" : "closed");
   log(buf);
   
-    lcd.setCursor(0,2);
-    lcd.print(buf);
+  lcd_writeln(0, 2, buf);
   
   char voltstr[10];
   sprintf(buf, "Battery %sV", dtostrf(volts, 2, 2, voltstr));
   log(buf);
-    lcd.setCursor(0,3);
-    lcd.print(buf);
+  lcd_writeln(0, 3, buf);
      
 // check if fuel is low, shutdown (if pump is running) and turn on low fuel alert
   if (!low_fuel) {
-    
-   do_shutdown();    
-    lcd.init();
-    lcd.setCursor(0,0);
-    lcd.print("Low Fuel ALERT");
-    lcd.setCursor(0,1);
-    lcd.print("Resume Press Reset");  
-   alert("low fuel");   
+    alert("low fuel");
 }
 
 /*    the start button will place the program into "manual mode", start the pump and 
@@ -472,16 +461,8 @@ void loop() {
 //  reset button is pressed. change back to auto mode.
  
     if (pump_is_now_running && !stop_button) {
-      log("stop button pressed");
       log("turn auto mode on");
       mode_auto = 1;
-      
-      do_shutdown();    
-        lcd.init();
-        lcd.setCursor(0,0);
-        lcd.print("Stop button pressed");
-        lcd.setCursor(0,1);
-        lcd.print("Resume Press Reset");  
       alert("stop button pressed");
     }
 
@@ -492,9 +473,8 @@ void loop() {
 
   if (!pump_is_now_running && !quiet_time && mode_auto) {
 
-    lcd.setCursor(0,0);
-    lcd.print("Pump is not running ");
-    
+    //lcd_writeln(0, 0, "Pump NOT running ");
+
     if (digitalRead(IN_TANK_1_FLOAT) == LOW) {
       do_tank_1_valve_open();
       do_startup();
@@ -530,33 +510,16 @@ void loop() {
     
     if (pump_is_now_running) {
       if (!no_water_pressure && !low_oil_pressure){
-          log("pump is running, water and oil pressure is good");  
-          lcd.setCursor(0,0);
-          lcd.print("Pump is running     ");
+        //log("pump is running, water and oil pressure is good");
 
     }  
       if (no_water_pressure) {
-          log("pump is running, BUT water pressure is NOT good");        
-          
-          do_shutdown();         
-            lcd.init();
-            lcd.setCursor(0,0);      
-            lcd.print("Low Water Pressure");
-            lcd.setCursor(0,1);         
-            lcd.print("Resume Press Reset");
-           alert("low water pressure"); 
-          
+        //log("pump is running, BUT water pressure is NOT good");
+        alert("Water Pressure low");
     }
       if (low_oil_pressure) {
-           log("pump is running, BUT oil pressure is not good");    
-           
-           do_shutdown();        
-            lcd.init();
-            lcd.setCursor(0,0);
-            lcd.print("Low Oil Pressure    ");
-            lcd.setCursor(0,1);
-            lcd.print("Resume Press Reset  ");          
-           alert("low Oil pressure"); 
+        //log("pump is running, BUT oil pressure is not good");
+        alert("Oil pressure low");
      }
   }
 
