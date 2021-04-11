@@ -1,7 +1,7 @@
 
-/* vi:set tabstop=2: shiftwidth=2: softtabstop=2: expandtab: */
-/* :e ++ff=dos then remove ^M */
-/*
+/* vi:set tabstop=2: shiftwidth=2: softtabstop=2: expandtab:
+ * :e ++ff=dos then remove ^M
+ *
  * Pump control system
  *
  * Each pin can provide or receive a maximum of 40 mA and has an internal
@@ -22,17 +22,8 @@
  * actions.
  */
 
-// For half-duplex rs485 communication between Arduino's,
-//over my Cat6 cable from the Dam Pump to the Tank(s)
-//#include <ArduinoRS485.h>
-
 #include <LiquidCrystal_I2C.h>
 #include <Wire.h>
-// Connect pins 2 to SDA & 3 toSCL on the Leonardo board.
-// Connect pins SDA to A4, SCL to A5 on an UNO
-// Install the "LiquidCrystalI2C" library
-
-LiquidCrystal_I2C lcd(0x27, 20, 4);
 //initialize the liquid crystal library and create an "lcd" instance
 //the first parameter is the I2C address - for the 20x4 it is 0x27
 //the second parameter is how many columns are on your screen
@@ -41,6 +32,16 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 //To run multiple displays, short the A0,A1 or A2 jumpers on the I2C adapter
 //to get different addresses on different displays. Then create
 //new instances with LiquidCrystal_I2C
+/* SDA and SCL pins as defined in arduino pinout diagram
+ * +-----+-----+-----+------+
+ * |     | LEO | UNO | NANO |
+ * +-----+-----+-----+------+
+ * | SDA | 2   | A4  | A4   |
+ * +-----+-----+-----+------+
+ * | SCL | 3   | A5  | A5   |
+ * +-----+-----+-----+------+
+*/
+LiquidCrystal_I2C lcd(0x27, 20, 4);
 
 // For 2.4g - 2.5g wireless comunications between Adruinos using the RF24.h library.
 //#include <nRF24L01.h>
@@ -56,7 +57,7 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 #define IN_TANK_1_FLOAT                 4
 #define IN_TANK_1_LIM                   5
 #define IN_TANK_2_FLOAT                 6
-#define IN_TANK_2_LIM                   7
+#define IN_TANK_2_LIM                   6
 #define IN_TIME_CLOCK                   8
 #define IN_FUEL                         9
 #define IN_WATER_PRESSURE               10
@@ -154,8 +155,9 @@ float readbatt() {
   return v;
 }
 
-void lcd_writeln(uint8_t col, uint8_t row, const char *buf) {
-  lcd.setCursor(col, row);
+void lcd_writeln(uint8_t row, const char *buf) {
+	// always write from beginning of row
+  lcd.setCursor(0, row);
   // we want to trim to 20 chars and pad with spaces so we get a clean line
   // we don't want to mess with the real buf so copy what we need into a new buf here
   // 21 chars so we can add a null terminator at the end in-case we print as a
@@ -170,10 +172,9 @@ void lcd_writeln(uint8_t col, uint8_t row, const char *buf) {
     lcdbuf[len] = ' ';
     len++;
   }
-  // add null terminator to signal end of string
-  // not required for lcd print, but required for normal string printing
+  // add null terminator to signal end of string, required for lcd print
   lcdbuf[len] = '\0';
-  //log("lcdbuf:");
+  //log("lcdbuf sending:");
   //log(lcdbuf);
   lcd.print(lcdbuf);
 }
@@ -181,10 +182,10 @@ void lcd_writeln(uint8_t col, uint8_t row, const char *buf) {
 //defining alert due low fuel, low water or oil pressure
 void alert(const char *msg) {
   do_shutdown();
-  lcd_writeln(0, 0, "Alert!");
-  lcd_writeln(0, 1, msg);
-  lcd_writeln(0, 2, "");
-  lcd_writeln(0, 3, "Press Alarm Reset");
+  lcd_writeln(0, "Alert!");
+  lcd_writeln(1, msg);
+  lcd_writeln(2, "");
+  lcd_writeln(3, "Press Alarm Reset");
   // this buf is the global buf
   sprintf(buf, "Alert: %s", msg);
   log(buf);
@@ -245,7 +246,7 @@ void do_shutdown() {
   
   for (cnt = 0; cnt < IGN_OFF_WAIT_MAX; cnt++) {
     delay(1000);
-    lcd_writeln(0, 0, "Shutting Down Pump");
+    lcd_writeln(0, "Shutting Down Pump");
    
     if (digitalRead(IN_OIL_PRESSURE_SWITCH) == HIGH && digitalRead(IN_WATER_PRESSURE) == HIGH){    
       close_valves();
@@ -286,12 +287,12 @@ void do_startup() {
   startup_attempt++;
   sprintf(buf, "Start attempt: %d", startup_attempt);
   log(buf);
-  lcd_writeln(0, 0, buf);
+  lcd_writeln(0, buf);
 
   // clear following lines that do not get used for a few seconds
-  lcd_writeln(0, 1, "");
-  lcd_writeln(0, 2, "");
-  lcd_writeln(0, 3, "");
+  lcd_writeln(1, "");
+  lcd_writeln(2, "");
+  lcd_writeln(3, "");
   
   // a message stating why want to wait for the cranking delay time period
   if(startup_attempt >= 2) {
@@ -308,7 +309,7 @@ void do_startup() {
   // delay function expects microseconds
   delay(CRANKING_DELAY * 1000);
 
-  lcd_writeln(0, 1, "Cranking...");
+  lcd_writeln(1, "Cranking...");
 
   digitalWrite(OUT_START, HIGH);
   delay(CRANKING_TIME * 1000);
@@ -317,7 +318,7 @@ void do_startup() {
   for (cnt = 0; cnt < PRESSURE_WAIT_MAX; cnt++) {
     /* check pressure inputs every 1 second */
     delay(1000);
-    lcd_writeln(0, 1, "Waiting for pressure");
+    lcd_writeln(1, "Waiting for pressure");
 
     char stat[3];
     if (digitalRead(IN_OIL_PRESSURE_SWITCH) == LOW){
@@ -327,7 +328,7 @@ void do_startup() {
       sprintf(stat, "NO");
     }
     sprintf(buf, "oil pressure: %s", stat);
-    lcd_writeln(0, 2, buf);
+    lcd_writeln(2, buf);
       
     if (digitalRead(IN_WATER_PRESSURE) == LOW){
       sprintf(stat, "OK");
@@ -336,7 +337,7 @@ void do_startup() {
       sprintf(stat, "NO");
     }
     sprintf(buf, "water pressure: %s", stat);
-    lcd_writeln(0, 3, buf);
+    lcd_writeln(3, buf);
     
     if (digitalRead(IN_OIL_PRESSURE_SWITCH) == LOW && digitalRead(IN_WATER_PRESSURE) == LOW){
       //log("pump is now running"); this is indicated in main loop
@@ -360,11 +361,6 @@ void do_startup() {
 
 void loop() {
   delay(100);
-  
-  //Initialise (clear) LC Display
-  //lcd.init();
-  // LCD is initialised in setup function, we don't need to clear it here
-  // because we simply overwrite the lines with new content.
 
   int start_button = digitalRead(IN_START);
   int stop_button = digitalRead(IN_STOP);
@@ -395,7 +391,7 @@ void loop() {
   log(buf);
   sprintf(buf, "Pump%srunning", pump_is_now_running ? " " : " NOT ");
   log(buf);
-  lcd_writeln(0, 0, buf);
+  lcd_writeln(0, buf);
   //sprintf(buf, "ignition output is %s", ignition_status ? "on" : "off");
   //log(buf);
   sprintf(buf, "water pressure %s", no_water_pressure ? "no" : "yes");
@@ -409,7 +405,7 @@ void loop() {
     digitalRead(IN_TANK_1_FLOAT),
     tank_1_valve_open ? "open" : "closed");
   log(buf);
-  lcd_writeln(0, 1, buf);
+  lcd_writeln(1, buf);
   
   sprintf(buf, "T2:L%d F%d V %s",
     digitalRead(IN_TANK_2_LIM),
@@ -417,12 +413,12 @@ void loop() {
     tank_2_valve_open ? "open" : "closed");
   log(buf);
   
-  lcd_writeln(0, 2, buf);
+  lcd_writeln(2, buf);
   
   char voltstr[10];
   sprintf(buf, "Battery %sV", dtostrf(volts, 2, 2, voltstr));
   log(buf);
-  lcd_writeln(0, 3, buf);
+  lcd_writeln(3, buf);
      
 // check if fuel is low, shutdown (if pump is running) and turn on low fuel alert
   if (!low_fuel) {
@@ -472,7 +468,7 @@ void loop() {
 
   if (!pump_is_now_running && !quiet_time && mode_auto) {
 
-    //lcd_writeln(0, 0, "Pump NOT running ");
+    //lcd_writeln(0, "Pump NOT running ");
 
     if (digitalRead(IN_TANK_1_FLOAT) == LOW) {
       do_tank_1_valve_open();
